@@ -1,5 +1,6 @@
 import { load } from "cheerio";
 import puppeteer from "puppeteer";
+import logger from "../api/lib/logger";
 import scale from "../config/scale";
 import { LinkRepository } from "../storage/LinkRepository";
 import { LinkEntity } from "../types";
@@ -87,7 +88,7 @@ export class LinkScraper {
           uniqueLinks.set(url, { url, anchorText });
         }
       } catch (error) {
-        console.error(`Invalid URL skipped: ${$el.attr("href")}`, error);
+        logger.warn(`Invalid URL skipped: ${$el.attr("href")}`, error);
       }
     });
 

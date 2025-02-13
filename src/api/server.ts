@@ -8,6 +8,7 @@ import { LinkRepository } from "../storage/LinkRepository";
 import { LinkEntity, LinkQueryParams } from "../types";
 import { errorHandler, HttpError } from "./lib/error";
 import { isValidUrl } from "./lib/helpers";
+import logger from "./lib/logger";
 
 // Initialize database before starting server
 initializeDatabase();
@@ -163,5 +164,5 @@ app.post(
 app.use(errorHandler);
 
 app.listen(3000, () => {
-  console.info("API running on port 3000");
+  logger.info("API running on port 3000");
 });

@@ -1,4 +1,5 @@
 import { execSync } from "child_process";
+import logger from "../api/lib/logger";
 import db from "../config/database";
 
 export default function initializeDatabase() {
@@ -16,9 +17,9 @@ export default function initializeDatabase() {
 
     if (tables.length !== 3) throw new Error(`Expected 3 shard tables, found ${tables.length}`);
 
-    console.info("✅ Database initialized successfully");
+    logger.info("✅ Database initialized successfully");
   } catch (error) {
-    console.error("❌ Database initialization failed:", error);
+    logger.error("❌ Database initialization failed:", error);
     process.exit(1);
   }
 }
