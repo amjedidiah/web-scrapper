@@ -1,6 +1,6 @@
-import { ulid } from 'ulid';
-import db from './initDB';
-import type { ScrapedLink } from '../core/scrapper';
+import { ulid } from "ulid";
+import type { ScrapedLink } from "../core/scrapper";
+import db from "./initDB";
 
 export class LinkRepository {
   async insertLink(link: ScrapedLink & { parentUrl: string }): Promise<void> {
@@ -15,7 +15,7 @@ export class LinkRepository {
       link.anchorText,
       link.score,
       JSON.stringify(link.keywords),
-      link.parentUrl
+      link.parentUrl,
     );
   }
 
@@ -39,12 +39,12 @@ export class LinkRepository {
             link.score,
             JSON.stringify(link.keywords),
             link.parentUrl,
-            link.type
+            link.type,
           );
         } catch (error) {
-          console.error('Failed to insert link:', {
+          console.error("Failed to insert link:", {
             url: link.url,
-            error: (error as Error).message
+            error: (error as Error).message,
           });
         }
       }
@@ -52,4 +52,4 @@ export class LinkRepository {
 
     transaction(links);
   }
-} 
+}

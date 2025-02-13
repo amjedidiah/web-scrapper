@@ -1,6 +1,6 @@
-import Database from 'better-sqlite3';
+import Database from "better-sqlite3";
 
-const db = new Database('links.db');
+const db = new Database("links.db");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS links (
@@ -19,6 +19,6 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_type ON links (type);
 `);
 
-console.info('Database initialized successfully');
+console.info("Database initialized successfully");
 
-export default db
+export default db;
