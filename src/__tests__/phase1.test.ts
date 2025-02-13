@@ -8,8 +8,16 @@ describe("Phase 1 Tests", () => {
   const scraper = new LinkScraper();
 
   beforeEach(() => {
-    // Clear links between tests
-    db.prepare("DELETE FROM links").run();
+    // Clear all shard tables between tests using individual statements
+    const clearStmts = [
+      db.prepare("DELETE FROM links_high"),
+      db.prepare("DELETE FROM links_medium"),
+      db.prepare("DELETE FROM links_low"),
+    ];
+
+    db.transaction(() => {
+      clearStmts.forEach((stmt) => stmt.run());
+    })();
   });
 
   test.each(TEST_URLS)(

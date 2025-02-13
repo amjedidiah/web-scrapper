@@ -42,32 +42,49 @@ class LinkScraper {
 
 ```typescript:src/config/database.ts
 import Database from "better-sqlite3";
+import { config } from "dotenv";
+import scale from "./scale";
 
-const db = new Database("links.db");
+// Load environment variables FIRST
+config({
+  path:
+    {
+      production: ".env",
+      test: ".env.test",
+    }[process.env.NODE_ENV!] ?? ".env.local",
+});
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS links (
-    id TEXT PRIMARY KEY,
-    url TEXT NOT NULL UNIQUE,
-    anchor_text TEXT NOT NULL,
-    score REAL NOT NULL,
-    keywords TEXT NOT NULL CHECK(json_valid(keywords)),
-    parent_url TEXT NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('document', 'contact', 'general')),
-    crawled_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-  
-  CREATE INDEX IF NOT EXISTS idx_score ON links (score);
-  CREATE INDEX IF NOT EXISTS idx_keywords ON links (keywords);
-  CREATE INDEX IF NOT EXISTS idx_type ON links (type);
-  CREATE INDEX IF NOT EXISTS idx_parent_url ON links (parent_url);
-  CREATE INDEX IF NOT EXISTS idx_keywords_length ON links (json_array_length(keywords))
-    WHERE json_array_length(keywords) > 0;
-`);
+// Validate environment variable
+const DB_PATH = process.env.SQLITE_DB_NAME;
+if (!DB_PATH) throw new Error("SQLITE_DB_NAME environment variable not set");
 
-console.info("Database initialized successfully");
+// Initialize primary database instance
+const primaryDB = new Database(DB_PATH, {
+  timeout: scale.database.timeout,
+  undefined,
+});
 
-export default db;
+// Apply performance optimizations
+primaryDB.pragma("journal_mode = WAL");
+primaryDB.pragma("synchronous = NORMAL");
+primaryDB.pragma("temp_store = MEMORY");
+primaryDB.pragma("mmap_size = 30000000000");
+
+// Create connection pool
+const pool = Array.from({ length: scale.database.poolSize }, () => primaryDB);
+
+// Export wrapped instance with all required methods
+export default {
+  ...primaryDB,
+  exec: (sql: string) => primaryDB.exec(sql),
+  prepare: (sql: string) => pool[Math.floor(Math.random() * pool.length)].prepare(sql),
+  close: () => primaryDB.close(),
+  transaction: (fn: (...args: unknown[]) => unknown) => {
+    const transactionFn = primaryDB.transaction(fn);
+    return (...args: Parameters<typeof transactionFn>) => transactionFn(...args);
+  },
+} as unknown as Database.Database;
+
 ```
 
 ### Phase 4: Express API
@@ -82,22 +99,31 @@ app.get('/links', async (req, res) => {
 });
 
 app.listen(3000, () => {
-  console.info('API running on port 3000');
+  logger.info('API running on port 3000');
 });
 ```
 
 ### Phase 5: Scaling Preparation
 
 ```typescript:src/config/scale.ts
-export const config = {
+const scale = {
   rateLimiting: {
-    windowMs: 60_000,
-    maxRequests: 1000
+    windowMs: 60_000, // 1 minute window
+    maxRequests: 1000, // Limit each IP to 1000 requests per window
   },
   database: {
-    poolSize: process.env.NODE_ENV === 'production' ? 50 : 10
-  }
+    poolSize: process.env.NODE_ENV === "production" ? 100 : 20,
+    timeout: 30_000, // 30 second connection timeout
+  },
+  scraping: {
+    maxConcurrent: process.env.NODE_ENV === "production" ? 100 : 10,
+  },
+  search: {
+    pageSize: 100,
+  },
 };
+
+export default scale;
 ```
 
 ## Implementation Checklist
@@ -122,7 +148,7 @@ export const config = {
 - [x] GET /links/:id (details)
 - [x] POST /scrape (trigger new scrape)
 - [x] Rate limiting middleware
-- [ ] Pagination support
+- [x] Pagination support
 
 ### Testing
 

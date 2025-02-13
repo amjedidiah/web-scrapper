@@ -3,10 +3,14 @@ import rateLimit from "express-rate-limit";
 import db from "../config/database";
 import scale from "../config/scale";
 import { LinkScraper } from "../core/scrapper";
+import initializeDatabase from "../services/initializeDB";
 import { LinkRepository } from "../storage/LinkRepository";
 import { LinkEntity, LinkQueryParams } from "../types";
 import { errorHandler, HttpError } from "./lib/error";
 import { isValidUrl } from "./lib/helpers";
+
+// Initialize database before starting server
+initializeDatabase();
 
 const app = express();
 app.use(express.json());
@@ -28,26 +32,54 @@ app.get(
     next: NextFunction,
   ) => {
     try {
-      const { minScore = "0.5", keyword, parentUrl } = req.query;
+      const { minScore = "0", keyword, parentUrl, page = "1" } = req.query;
+      const pageSize = scale.search.pageSize;
+      const pageNumber = parseInt(page) || 1;
 
       const minScoreNumber = parseFloat(minScore);
       if (isNaN(minScoreNumber)) throw new HttpError("Invalid minScore parameter", 400);
 
-      let query = `SELECT * FROM links WHERE score >= @minScore`;
-      const params: Record<string, string | number> = { minScore: minScoreNumber };
+      const query = `
+        WITH combined_links AS (
+          SELECT * FROM links_high WHERE score >= @minScore
+          UNION ALL
+          SELECT * FROM links_medium WHERE score >= @minScore
+          UNION ALL
+          SELECT * FROM links_low WHERE score >= @minScore
+        )
+        SELECT * FROM combined_links
+        ${parentUrl ? "WHERE parent_url GLOB @parentUrlWildcard" : ""}
+        ${keyword ? "AND json_extract(keywords, '$') LIKE '%' || @keyword || '%'" : ""}
+        ORDER BY score DESC
+        LIMIT @limit OFFSET @offset
+      `;
 
-      if (parentUrl) {
-        query += ` AND parent_url = @parentUrl`;
-        params.parentUrl = parentUrl;
-      }
-
-      if (keyword) {
-        query += ` AND EXISTS (SELECT 1 FROM json_each(keywords) WHERE value LIKE @keyword)`;
-        params.keyword = `%${keyword}%`;
-      }
+      const params = {
+        minScore: minScoreNumber,
+        ...(parentUrl && { parentUrlWildcard: `${parentUrl}*` }),
+        ...(keyword && { keyword }),
+        limit: pageSize,
+        offset: (pageNumber - 1) * pageSize,
+      };
 
       // Explicit type casting for database results
       const links = db.prepare(query).all(params) as LinkEntity[];
+
+      const countQuery = `
+        WITH combined_links AS (
+          SELECT * FROM links_high WHERE score >= @minScore
+          UNION ALL
+          SELECT * FROM links_medium WHERE score >= @minScore
+          UNION ALL
+          SELECT * FROM links_low WHERE score >= @minScore
+        )
+        SELECT COUNT(*) as total FROM combined_links
+        ${parentUrl ? "WHERE parent_url GLOB @parentUrlWildcard" : ""}
+        ${keyword ? "AND json_extract(keywords, '$') LIKE '%' || @keyword || '%'" : ""}
+      `;
+
+      const totalCount =
+        (db.prepare(countQuery).get(params) as { total: number } | undefined)?.total ?? 0;
 
       const formattedLinks = links.map((link) => ({
         ...link,
@@ -56,8 +88,10 @@ app.get(
 
       res.send({
         data: {
-          count: links.length,
+          totalResultsCount: totalCount,
           results: formattedLinks,
+          page: pageNumber,
+          totalPages: Math.ceil(totalCount / pageSize),
         },
         message: "Successfully retrieved links",
         error: false,
@@ -101,7 +135,6 @@ app.post(
       const scraper = new LinkScraper();
       const repository = new LinkRepository();
 
-      console.log({ url }, req.body);
       if (!url || !isValidUrl(url)) throw new HttpError("Valid `url` required", 400);
 
       const results = await scraper.scrape(url);

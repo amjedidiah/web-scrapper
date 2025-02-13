@@ -13,4 +13,5 @@ export interface LinkQueryParams {
   minScore?: string;
   keyword?: string;
   parentUrl?: string;
+  page?: string;
 }

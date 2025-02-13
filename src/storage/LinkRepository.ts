@@ -1,12 +1,15 @@
-import Database, { Database as DatabaseType } from "better-sqlite3";
+import { Database } from "better-sqlite3";
 import { ulid } from "ulid";
+import db from "../config/database";
 import config from "../config/scale";
 import type { ScrapedLink } from "../core/scrapper";
 
-export class LinkRepository {
-  private static readonly pool: Map<string, DatabaseType> = new Map();
+export type ScrapedLinkWithParent = ScrapedLink & { parentUrl: string };
 
-  private getConnection(): DatabaseType {
+export class LinkRepository {
+  private static readonly pool: Map<string, Database> = new Map();
+
+  private getConnection(): Database {
     // Clean up closed connections
     LinkRepository.pool.forEach((conn, id) => {
       if (conn.open === false) LinkRepository.pool.delete(id);
@@ -16,18 +19,18 @@ export class LinkRepository {
       return [...LinkRepository.pool.values()][0];
     }
 
-    const newConn = new Database("links.db", {
-      timeout: config.database.timeout,
-    });
-    LinkRepository.pool.set(ulid(), newConn);
-    return newConn;
+    LinkRepository.pool.set(ulid(), db);
+    return db;
   }
 
-  async insertLink(link: ScrapedLink & { parentUrl: string }): Promise<void> {
+  async insertLink(link: ScrapedLinkWithParent): Promise<void> {
     const db = this.getConnection();
+    const shard = this.determineShard(link.score);
+
     const stmt = db.prepare(`
-      INSERT INTO links (id, url, anchor_text, score, keywords, parent_url)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO links_${shard} 
+      (id, url, anchor_text, score, keywords, parent_url, type)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
@@ -37,24 +40,40 @@ export class LinkRepository {
       link.score,
       JSON.stringify(link.keywords),
       link.parentUrl,
+      link.type,
     );
   }
 
-  async bulkInsert(links: Array<ScrapedLink & { parentUrl: string }>): Promise<void> {
+  async bulkInsert(links: Array<ScrapedLinkWithParent>): Promise<void> {
     const db = this.getConnection();
-    const insert = db.prepare(`
-      INSERT INTO links (id, url, anchor_text, score, keywords, parent_url, type)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(url) DO UPDATE SET
-        score = excluded.score,
-        keywords = excluded.keywords,
-        type = excluded.type
-    `);
 
-    const transaction = db.transaction((links) => {
-      for (const link of links) {
-        try {
-          insert.run(
+    // Group links by score range for efficient batch inserts
+    const shardedLinks = links.reduce(
+      (acc, link) => {
+        const shard = this.determineShard(link.score);
+        acc[shard].push(link);
+        return acc;
+      },
+      {
+        high: [] as Array<ScrapedLinkWithParent>,
+        medium: [] as Array<ScrapedLinkWithParent>,
+        low: [] as Array<ScrapedLinkWithParent>,
+      },
+    );
+
+    // Use transaction for atomic operations
+    db.transaction(() => {
+      for (const [shard, shardLinks] of Object.entries(shardedLinks)) {
+        if (shardLinks.length === 0) continue;
+
+        const stmt = db.prepare(`
+          INSERT OR IGNORE INTO links_${shard} 
+          (id, url, anchor_text, score, keywords, parent_url, type)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        for (const link of shardLinks) {
+          stmt.run(
             ulid(),
             link.url,
             link.anchor_text,
@@ -63,15 +82,14 @@ export class LinkRepository {
             link.parentUrl,
             link.type,
           );
-        } catch (error) {
-          console.error("Failed to insert link:", {
-            url: link.url,
-            error: (error as Error).message,
-          });
         }
       }
-    });
+    })();
+  }
 
-    transaction(links);
+  private determineShard(score: number): "high" | "medium" | "low" {
+    if (score >= 0.7) return "high";
+    if (score >= 0.3) return "medium";
+    return "low";
   }
 }
