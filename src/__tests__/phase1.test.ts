@@ -1,15 +1,6 @@
+import db from "../config/database";
 import { LinkScraper } from "../core/scrapper";
-import db from "../storage/database";
-
-interface LinkEntity {
-  id: string;
-  url: string;
-  anchor_text: string;
-  score: number;
-  keywords: string;
-  parent_url: string;
-  crawled_at: Date;
-}
+import { LinkEntity } from "../types";
 
 const TEST_URLS = ["https://www.a2gov.org/", "https://bozeman.net/", "https://asu.edu/"];
 

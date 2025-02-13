@@ -1,9 +1,30 @@
+import Database, { Database as DatabaseType } from "better-sqlite3";
 import { ulid } from "ulid";
+import config from "../config/scale";
 import type { ScrapedLink } from "../core/scrapper";
-import db from "./database";
 
 export class LinkRepository {
+  private static readonly pool: Map<string, DatabaseType> = new Map();
+
+  private getConnection(): DatabaseType {
+    // Clean up closed connections
+    LinkRepository.pool.forEach((conn, id) => {
+      if (conn.open === false) LinkRepository.pool.delete(id);
+    });
+
+    if (LinkRepository.pool.size >= config.database.poolSize) {
+      return [...LinkRepository.pool.values()][0];
+    }
+
+    const newConn = new Database("links.db", {
+      timeout: config.database.timeout,
+    });
+    LinkRepository.pool.set(ulid(), newConn);
+    return newConn;
+  }
+
   async insertLink(link: ScrapedLink & { parentUrl: string }): Promise<void> {
+    const db = this.getConnection();
     const stmt = db.prepare(`
       INSERT INTO links (id, url, anchor_text, score, keywords, parent_url)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -12,7 +33,7 @@ export class LinkRepository {
     stmt.run(
       ulid(),
       link.url,
-      link.anchorText,
+      link.anchor_text,
       link.score,
       JSON.stringify(link.keywords),
       link.parentUrl,
@@ -20,6 +41,7 @@ export class LinkRepository {
   }
 
   async bulkInsert(links: Array<ScrapedLink & { parentUrl: string }>): Promise<void> {
+    const db = this.getConnection();
     const insert = db.prepare(`
       INSERT INTO links (id, url, anchor_text, score, keywords, parent_url, type)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -35,7 +57,7 @@ export class LinkRepository {
           insert.run(
             ulid(),
             link.url,
-            link.anchorText,
+            link.anchor_text,
             link.score,
             JSON.stringify(link.keywords),
             link.parentUrl,

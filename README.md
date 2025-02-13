@@ -17,16 +17,19 @@ npm install -D eslint @typescript-eslint/parser
 ```typescript:src/core/scrapper.ts
 interface ScrapedLink {
   url: string;
-  anchor: string;
+  anchor_text: string;
   score: number;
+  type: "document" | "contact" | "general";
   keywords: string[];
 }
 
 class LinkScraper {
   private readonly KEYWORD_WEIGHTS = {
-    'acfr': 3,
-    'budget': 2,
-    'contact': 1.5
+    acfr: 3,
+    budget: 2.5,
+    "finance director": 2,
+    contact: 2,
+    document: 1.5,
   };
 
   async scrape(url: string): Promise<ScrapedLink[]> {
@@ -37,23 +40,34 @@ class LinkScraper {
 
 ### Phase 3: Database Setup (SQLite)
 
-```typescript:src/storage/database.ts
-import Database from 'better-sqlite3';
+```typescript:src/config/database.ts
+import Database from "better-sqlite3";
 
-export const db = new Database('links.db');
+const db = new Database("links.db");
 
-// Initial schema
 db.exec(`
   CREATE TABLE IF NOT EXISTS links (
-    id INTEGER PRIMARY KEY,
-    url TEXT UNIQUE,
-    anchor_text TEXT,
-    score REAL,
-    keywords JSON,
-    parent_url TEXT,
+    id TEXT PRIMARY KEY,
+    url TEXT NOT NULL UNIQUE,
+    anchor_text TEXT NOT NULL,
+    score REAL NOT NULL,
+    keywords TEXT NOT NULL CHECK(json_valid(keywords)),
+    parent_url TEXT NOT NULL,
+    type TEXT NOT NULL CHECK(type IN ('document', 'contact', 'general')),
     crawled_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
+  );
+  
+  CREATE INDEX IF NOT EXISTS idx_score ON links (score);
+  CREATE INDEX IF NOT EXISTS idx_keywords ON links (keywords);
+  CREATE INDEX IF NOT EXISTS idx_type ON links (type);
+  CREATE INDEX IF NOT EXISTS idx_parent_url ON links (parent_url);
+  CREATE INDEX IF NOT EXISTS idx_keywords_length ON links (json_array_length(keywords))
+    WHERE json_array_length(keywords) > 0;
 `);
+
+console.info("Database initialized successfully");
+
+export default db;
 ```
 
 ### Phase 4: Express API
@@ -104,10 +118,10 @@ export const config = {
 
 ### API Features
 
-- [ ] GET /links (search)
-- [ ] GET /links/:id (details)
-- [ ] POST /scrape (trigger new scrape)
-- [ ] Rate limiting middleware
+- [x] GET /links (search)
+- [x] GET /links/:id (details)
+- [x] POST /scrape (trigger new scrape)
+- [x] Rate limiting middleware
 - [ ] Pagination support
 
 ### Testing
@@ -131,19 +145,20 @@ test.each(TEST_SITES)('Scrapes %s successfully', async (url) => {
 1. Initialize database:
 
     ```bash
-    npx ts-node src/storage/database.ts
+    npx ts-node src/config/database.ts
     ```
 
-2. Start scraper:
+2. Test scraper:
 
     ```bash
-    npx ts-node src/core/scrapper.ts --url https://example.com
+    npm run test
     ```
 
-3. Run API:
+3. Run API Server:
 
     ```bash
-    npx ts-node src/api/server.ts
+    npm run api:dev     # Dev environment
+    npm run api:start   # Prod environment
     ```
 
 ## Scaling Considerations

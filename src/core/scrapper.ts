@@ -1,14 +1,12 @@
 import { load } from "cheerio";
 import puppeteer from "puppeteer";
+import scale from "../config/scale";
 import { LinkRepository } from "../storage/LinkRepository";
+import { LinkEntity } from "../types";
 
-export interface ScrapedLink {
-  url: string;
-  anchorText: string;
-  score: number;
+export type ScrapedLink = Pick<LinkEntity, "url" | "anchor_text" | "score" | "type"> & {
   keywords: string[];
-  type: "document" | "contact" | "general";
-}
+};
 
 export class LinkScraper {
   private readonly KEYWORD_WEIGHTS = {
@@ -39,7 +37,13 @@ export class LinkScraper {
   private async fetchHtml(url: string): Promise<string> {
     const browser = await puppeteer.launch({
       headless: true,
-      args: ["--disable-dev-shm-usage", "--no-zygote", "--no-sandbox", "--disable-web-security"],
+      args: [
+        `--max-parallel-runs=${scale.scraping.maxConcurrent}`,
+        "--disable-dev-shm-usage",
+        "--no-zygote",
+        "--no-sandbox",
+        "--disable-web-security",
+      ],
     });
     const page = await browser.newPage();
     await page.setUserAgent(
@@ -58,8 +62,8 @@ export class LinkScraper {
     });
 
     await page.goto(url, {
-      waitUntil: "domcontentloaded", // Faster than networkidle
-      timeout: 30_000,
+      waitUntil: "domcontentloaded",
+      timeout: scale.database.timeout,
     });
 
     const content = await page.content();
@@ -93,11 +97,13 @@ export class LinkScraper {
   private rankLinks(links: Array<{ url: string; anchorText: string }>): ScrapedLink[] {
     return links
       .map((link) => {
+        const { url, anchorText: anchor_text } = link;
         const keywords = this.detectKeywords(link);
         const type = this.determineLinkType(link.url, keywords);
 
         return {
-          ...link,
+          url,
+          anchor_text,
           keywords,
           score: this.calculateScore(keywords, type),
           type,
