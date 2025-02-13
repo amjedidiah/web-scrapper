@@ -68,7 +68,7 @@ app.get('/links', async (req, res) => {
 });
 
 app.listen(3000, () => {
-  console.log('API running on port 3000');
+  console.info('API running on port 3000');
 });
 ```
 

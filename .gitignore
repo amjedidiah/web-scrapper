@@ -1,2 +1,6 @@
 .vscode
 .cursorrules
+
+node_modules
+
+dist
