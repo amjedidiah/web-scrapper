@@ -17,6 +17,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_score ON links (score);
   CREATE INDEX IF NOT EXISTS idx_keywords ON links (keywords);
   CREATE INDEX IF NOT EXISTS idx_type ON links (type);
+  CREATE INDEX IF NOT EXISTS idx_parent_url ON links (parent_url);
+  CREATE INDEX IF NOT EXISTS idx_keywords_length ON links (json_array_length(keywords))
+    WHERE json_array_length(keywords) > 0;
 `);
 
 console.info("Database initialized successfully");

@@ -1,6 +1,6 @@
 import { ulid } from "ulid";
 import type { ScrapedLink } from "../core/scrapper";
-import db from "./initDB";
+import db from "./database";
 
 export class LinkRepository {
   async insertLink(link: ScrapedLink & { parentUrl: string }): Promise<void> {

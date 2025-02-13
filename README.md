@@ -14,7 +14,7 @@ npm install -D eslint @typescript-eslint/parser
 
 ### Phase 2: Scraper Implementation
 
-```typescript:src/core/scraper.ts
+```typescript:src/core/scrapper.ts
 interface ScrapedLink {
   url: string;
   anchor: string;
@@ -90,17 +90,17 @@ export const config = {
 
 ### Core Functionality
 
-- [ ] Base scraper with Cheerio/Puppeteer
-- [ ] Priority keyword scoring
-- [ ] Contact page detection
-- [ ] PDF/document link detection
+- [x] Base scraper with Cheerio/Puppeteer
+- [x] Priority keyword scoring
+- [x] Contact page detection
+- [x] PDF/document link detection
 
 ### Data Pipeline
 
-- [ ] SQLite schema setup
-- [ ] Batch insert operations
-- [ ] Duplicate URL handling
-- [ ] Index optimization
+- [x] SQLite schema setup
+- [x] Batch insert operations
+- [x] Duplicate URL handling
+- [x] Index optimization
 
 ### API Features
 
@@ -131,13 +131,13 @@ test.each(TEST_SITES)('Scrapes %s successfully', async (url) => {
 1. Initialize database:
 
     ```bash
-    npx ts-node src/storage/initDB.ts
+    npx ts-node src/storage/database.ts
     ```
 
 2. Start scraper:
 
     ```bash
-    npx ts-node src/core/scraper.ts --url https://example.com
+    npx ts-node src/core/scrapper.ts --url https://example.com
     ```
 
 3. Run API:

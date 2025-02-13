@@ -1,5 +1,5 @@
 import { LinkScraper } from "../core/scrapper";
-import db from "../storage/initDB";
+import db from "../storage/database";
 
 interface LinkEntity {
   id: string;
