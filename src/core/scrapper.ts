@@ -1,7 +1,7 @@
 import { load } from "cheerio";
 import puppeteer from "puppeteer";
-import logger from "../api/lib/logger";
 import scale from "../config/scale";
+import logger from "../lib/logger";
 import { LinkRepository } from "../storage/LinkRepository";
 import { LinkEntity } from "../types";
 
@@ -21,8 +21,14 @@ export class LinkScraper {
   private readonly repository = new LinkRepository();
 
   async scrape(url: string): Promise<ScrapedLink[]> {
+    logger.info(`\nStarting scrape job for ${url}\n`);
     const html = await this.fetchHtml(url);
-    const links = this.processHtml(html, url);
+
+    const { invalidUrls, links } = this.processHtml(html, url);
+    logger.info(
+      `Found ${links.length} unique links, ${invalidUrls} invalid URLs skipped, ${links.filter((l) => l.score > 0).length} scored, top 3:`,
+    );
+    console.table(links.slice(0, 3));
 
     // Store results
     await this.repository.bulkInsert(
@@ -36,6 +42,35 @@ export class LinkScraper {
   }
 
   private async fetchHtml(url: string): Promise<string> {
+    const MAX_RETRIES = 3;
+    let attempt = 0;
+
+    while (attempt < MAX_RETRIES) {
+      try {
+        return await this.fetchWithBrowserInstance(url, attempt);
+      } catch (error) {
+        attempt++;
+        if (attempt >= MAX_RETRIES) {
+          logger.error(`Scrape failed after ${MAX_RETRIES} attempts`, {
+            url,
+            error: (error as Error).message,
+          });
+          throw error;
+        }
+
+        logger.warn(`Retrying (${attempt}/${MAX_RETRIES})`, {
+          url,
+          error: (error as Error).message,
+          retryIn: `${2000 * attempt}ms`,
+        });
+
+        await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+      }
+    }
+    throw new Error("Max retries exceeded");
+  }
+
+  private async fetchWithBrowserInstance(url: string, attempt: number): Promise<string> {
     const browser = await puppeteer.launch({
       headless: true,
       args: [
@@ -44,37 +79,71 @@ export class LinkScraper {
         "--no-zygote",
         "--no-sandbox",
         "--disable-web-security",
+        "--disable-blink-features=AutomationControlled",
       ],
     });
-    const page = await browser.newPage();
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
-    );
-    await page.setJavaScriptEnabled(true);
 
-    // Block unnecessary resources
-    await page.setRequestInterception(true);
-    page.on("request", (req) => {
-      if (["image", "stylesheet", "font"].includes(req.resourceType())) {
-        req.abort();
-      } else {
-        req.continue();
+    try {
+      const page = await browser.newPage();
+      await page.setExtraHTTPHeaders({
+        "Accept-Language": "en-US,en;q=0.9",
+      });
+
+      // Rotating user agents
+      await page.setUserAgent(
+        [
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+          "AppleWebKit/537.36 (KHTML, like Gecko)",
+          `Chrome/${117 + attempt}.0.0.0`,
+          "Safari/537.36",
+        ].join(" "),
+      );
+
+      await page.setJavaScriptEnabled(true);
+      await page.setRequestInterception(true);
+
+      page.on("request", (req) => {
+        if (["image", "stylesheet", "font"].includes(req.resourceType())) req.abort();
+        else req.continue();
+      });
+
+      // Add request/response monitoring
+      page.on("response", (response) =>
+        logger.debug(`[${attempt}] ${response.status()} ${response.url()}`),
+      );
+
+      await page.goto(url, {
+        waitUntil: "networkidle2",
+        timeout: scale.scraping.timeout || 30_000,
+      });
+
+      const finalUrl = page.url();
+      if (finalUrl !== url) {
+        logger.warn(`Redirected to ${finalUrl} during attempt ${attempt}`);
       }
-    });
 
-    await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: scale.database.timeout,
-    });
+      const content = await page.content();
+      if (!content || content.length < 1000) {
+        throw new Error("Insufficient content length");
+      }
 
-    const content = await page.content();
-    await browser.close();
-    return content;
+      logger.info(`Scraped ${url} successfully (${content.length} bytes)`);
+      await browser.close();
+      return content;
+    } finally {
+      await browser
+        .close()
+        .catch((error) => logger.warn("Browser cleanup failed", { error: error.message }));
+    }
   }
 
-  private processHtml(html: string, baseUrl: string): ScrapedLink[] {
+  private processHtml(
+    html: string,
+    baseUrl: string,
+  ): { invalidUrls: number; links: ScrapedLink[] } {
     const $ = load(html);
     const uniqueLinks = new Map<string, { url: string; anchorText: string }>();
+    let invalidUrls = 0;
 
     $("a[href]").each((_, el) => {
       const $el = $(el);
@@ -89,14 +158,15 @@ export class LinkScraper {
         }
       } catch (error) {
         logger.warn(`Invalid URL skipped: ${$el.attr("href")}`, error);
+        invalidUrls++;
       }
     });
 
-    return this.rankLinks(Array.from(uniqueLinks.values()));
+    return { invalidUrls, links: this.rankLinks(Array.from(uniqueLinks.values())) };
   }
 
   private rankLinks(links: Array<{ url: string; anchorText: string }>): ScrapedLink[] {
-    return links
+    const rankedLinks = links
       .map((link) => {
         const { url, anchorText: anchor_text } = link;
         const keywords = this.detectKeywords(link);
@@ -111,6 +181,8 @@ export class LinkScraper {
         };
       })
       .sort((a, b) => b.score - a.score);
+
+    return rankedLinks;
   }
 
   private determineLinkType(url: string, keywords: string[]): ScrapedLink["type"] {

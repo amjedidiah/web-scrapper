@@ -1,6 +1,6 @@
 import { execSync } from "child_process";
-import logger from "../api/lib/logger";
 import db from "../config/database";
+import logger from "../lib/logger";
 
 export default function initializeDatabase() {
   try {

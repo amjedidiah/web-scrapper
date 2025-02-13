@@ -3,6 +3,7 @@ import { ulid } from "ulid";
 import db from "../config/database";
 import config from "../config/scale";
 import type { ScrapedLink } from "../core/scrapper";
+import logger from "../lib/logger";
 
 export type ScrapedLinkWithParent = ScrapedLink & { parentUrl: string };
 
@@ -85,6 +86,10 @@ export class LinkRepository {
         }
       }
     })();
+
+    const minScore = Math.min(...links.map((link) => link.score));
+    const maxScore = Math.max(...links.map((link) => link.score));
+    logger.info(`Inserted ${links.length} links with scores between ${minScore} and ${maxScore}`);
   }
 
   private determineShard(score: number): "high" | "medium" | "low" {

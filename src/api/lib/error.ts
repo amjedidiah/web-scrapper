@@ -1,5 +1,4 @@
 import { NextFunction, Request, Response } from "express";
-import logger from "./logger";
 
 // Error class for structured error handling
 export class HttpError extends Error {
@@ -19,10 +18,17 @@ export const errorHandler = (
   next: NextFunction,
 ) => {
   const statusCode = err instanceof HttpError ? err.statusCode : 500;
-  logger.error(`[${new Date().toISOString()}] Error: ${err.message}`);
+  const context = {
+    url: req.originalUrl,
+    method: req.method,
+    statusCode,
+  };
 
   res.status(statusCode).json({
-    data: null,
+    data: {
+      ...context,
+      stack: process.env.NODE_ENV !== "production" ? err.stack : undefined,
+    },
     message: err.message,
     error: true,
   });

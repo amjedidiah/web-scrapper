@@ -1,4 +1,3 @@
-import logger from "../api/lib/logger";
 import db from "../config/database";
 import { LinkScraper } from "../core/scrapper";
 import { LinkEntity } from "../types";
@@ -24,12 +23,8 @@ describe("Phase 1 Tests", () => {
   test.each(TEST_URLS)(
     "Should scrape and store links for %s",
     async (url) => {
-      logger.debug(`\n=== Testing ${url} ===`);
-
       // Execute scrape
       const results = await scraper.scrape(url);
-      logger.debug(`Found ${results.length} links, top 3:`);
-      console.table(results.slice(0, 3));
 
       // Verify database records
       const dbLinks = db

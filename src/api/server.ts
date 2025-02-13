@@ -3,12 +3,12 @@ import rateLimit from "express-rate-limit";
 import db from "../config/database";
 import scale from "../config/scale";
 import { LinkScraper } from "../core/scrapper";
+import logger from "../lib/logger";
 import initializeDatabase from "../services/initializeDB";
 import { LinkRepository } from "../storage/LinkRepository";
 import { LinkEntity, LinkQueryParams } from "../types";
 import { errorHandler, HttpError } from "./lib/error";
 import { isValidUrl } from "./lib/helpers";
-import logger from "./lib/logger";
 
 // Initialize database before starting server
 initializeDatabase();
@@ -138,6 +138,8 @@ app.post(
 
       if (!url || !isValidUrl(url)) throw new HttpError("Valid `url` required", 400);
 
+      logger.info(`Scrape request initiated for ${url}`);
+
       const results = await scraper.scrape(url);
       await repository.bulkInsert(
         results.map((link) => ({
@@ -151,7 +153,7 @@ app.post(
           processed: results.length,
           estimatedScore: results.reduce((sum, link) => sum + link.score, 0),
         },
-        message: "Scrape job initiated",
+        message: "Scrape job completed",
         error: false,
       });
     } catch (error) {
