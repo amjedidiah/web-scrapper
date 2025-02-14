@@ -5,7 +5,6 @@ import scale from "../config/scale";
 import { LinkScraper } from "../core/scrapper";
 import logger from "../lib/logger";
 import initializeDatabase from "../services/initializeDB";
-import { LinkRepository } from "../storage/LinkRepository";
 import { LinkEntity, LinkQueryParams } from "../types";
 import { errorHandler, HttpError } from "./lib/error";
 import { isValidUrl } from "./lib/helpers";
@@ -14,6 +13,7 @@ import { isValidUrl } from "./lib/helpers";
 initializeDatabase();
 
 const app = express();
+const port = process.env.PORT;
 app.use(express.json());
 
 // Add rate limiting middleware
@@ -35,10 +35,16 @@ app.get(
     try {
       const { minScore = "0", keyword, parentUrl, page = "1" } = req.query;
       const pageSize = scale.search.pageSize;
-      const pageNumber = parseInt(page) || 1;
+      const pageNumber = parseInt(page);
+      if (isNaN(pageNumber) || pageNumber < 1) throw new HttpError("Invalid page parameter", 400);
 
       const minScoreNumber = parseFloat(minScore);
       if (isNaN(minScoreNumber)) throw new HttpError("Invalid minScore parameter", 400);
+
+      const andStatement = parentUrl ? "AND" : "";
+      const keywordCondition = keyword
+        ? `${andStatement} json_extract(keywords, '$') LIKE '%' || @keyword || '%'`
+        : "";
 
       const query = `
         WITH combined_links AS (
@@ -49,8 +55,9 @@ app.get(
           SELECT * FROM links_low WHERE score >= @minScore
         )
         SELECT * FROM combined_links
-        ${parentUrl ? "WHERE parent_url GLOB @parentUrlWildcard" : ""}
-        ${keyword ? "AND json_extract(keywords, '$') LIKE '%' || @keyword || '%'" : ""}
+        ${[parentUrl, keyword].some(Boolean) ? "WHERE" : ""}
+        ${parentUrl ? "parent_url GLOB @parentUrlWildcard" : ""}
+        ${keywordCondition}
         ORDER BY score DESC
         LIMIT @limit OFFSET @offset
       `;
@@ -75,8 +82,9 @@ app.get(
           SELECT * FROM links_low WHERE score >= @minScore
         )
         SELECT COUNT(*) as total FROM combined_links
-        ${parentUrl ? "WHERE parent_url GLOB @parentUrlWildcard" : ""}
-        ${keyword ? "AND json_extract(keywords, '$') LIKE '%' || @keyword || '%'" : ""}
+        ${[parentUrl, keyword].some(Boolean) ? "WHERE" : ""}
+        ${parentUrl ? "parent_url GLOB @parentUrlWildcard" : ""}
+        ${keywordCondition}
       `;
 
       const totalCount =
@@ -131,24 +139,15 @@ app.post(
   "/scrape",
   apiLimiter,
   async (req: Request<object, object, { url: string }>, res: Response, next: NextFunction) => {
+    const scraper = new LinkScraper();
     try {
       const url = req.body?.url;
-      const scraper = new LinkScraper();
-      const repository = new LinkRepository();
 
       if (!url || !isValidUrl(url)) throw new HttpError("Valid `url` required", 400);
 
-      logger.info(`Scrape request initiated for ${url}`);
-
       const results = await scraper.scrape(url);
-      await repository.bulkInsert(
-        results.map((link) => ({
-          ...link,
-          parentUrl: url,
-        })),
-      );
 
-      res.status(202).json({
+      res.status(202).send({
         data: {
           processed: results.length,
           estimatedScore: results.reduce((sum, link) => sum + link.score, 0),
@@ -165,6 +164,7 @@ app.post(
 // Error Handler Middleware
 app.use(errorHandler);
 
-app.listen(3000, () => {
-  logger.info("API running on port 3000");
-});
+const server = app.listen(port, () => logger.info(`API running on port: ${port}`));
+
+// Export both app and server for testing
+export { app, server };

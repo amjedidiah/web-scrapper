@@ -2,6 +2,7 @@ import winston from "winston";
 
 // Winston logger instance
 const logger = winston.createLogger({
+  level: process.env.DEBUG,
   transports: [new winston.transports.Console()],
   format: winston.format.combine(
     winston.format.cli(),

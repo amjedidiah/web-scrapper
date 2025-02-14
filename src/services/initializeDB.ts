@@ -19,7 +19,7 @@ export default function initializeDatabase() {
 
     logger.info("✅ Database initialized successfully");
   } catch (error) {
-    logger.error("❌ Database initialization failed:", error);
+    logger.error(`❌ Database initialization failed: ${(error as Error).message}`);
     process.exit(1);
   }
 }

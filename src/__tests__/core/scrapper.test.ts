@@ -1,21 +1,26 @@
-import db from "../config/database";
-import { LinkScraper } from "../core/scrapper";
-import { LinkEntity } from "../types";
+import db from "../../config/database";
+import { LinkScraper } from "../../core/scrapper";
+import { LinkEntity } from "../../types";
 
-const TEST_URLS = ["https://www.a2gov.org/", "https://bozeman.net/", "https://asu.edu/"];
+const TEST_URLS = [
+  "https://www.a2gov.org/",
+  "https://bozeman.net/",
+  "https://asu.edu/",
+  "https://boerneisd.net/",
+];
 
 describe("Phase 1 Tests", () => {
   const scraper = new LinkScraper();
 
   beforeEach(() => {
-    // Clear all shard tables between tests using individual statements
-    const clearStmts = [
-      db.prepare("DELETE FROM links_high"),
-      db.prepare("DELETE FROM links_medium"),
-      db.prepare("DELETE FROM links_low"),
-    ];
-
+    // Clear existing data
     db.transaction(() => {
+      // Clear all shard tables
+      const clearStmts = [
+        db.prepare("DELETE FROM links_high"),
+        db.prepare("DELETE FROM links_medium"),
+        db.prepare("DELETE FROM links_low"),
+      ];
       clearStmts.forEach((stmt) => stmt.run());
     })();
   });
@@ -49,7 +54,7 @@ describe("Phase 1 Tests", () => {
     30_000,
   );
 
-  afterAll(() => {
+  afterAll(async () => {
     db.close();
   });
 });

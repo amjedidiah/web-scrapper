@@ -117,6 +117,10 @@ const scale = {
   },
   scraping: {
     maxConcurrent: process.env.NODE_ENV === "production" ? 100 : 10,
+    dnsTimeout: 10_000,
+    connectTimeout: 15_000,
+    navigationTimeout: 45_000,
+    httpTimeout: 10_000, // 10 seconds for HTTP requests
   },
   search: {
     pageSize: 100,
@@ -157,6 +161,7 @@ const TEST_SITES = [
   'https://www.a2gov.org/',
   'https://bozeman.net/',
   'https://asu.edu/'
+  'https://boerneisd.net/'
 ];
 
 test.each(TEST_SITES)('Scrapes %s successfully', async (url) => {

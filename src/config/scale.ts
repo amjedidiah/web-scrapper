@@ -9,7 +9,10 @@ const scale = {
   },
   scraping: {
     maxConcurrent: process.env.NODE_ENV === "production" ? 100 : 10,
-    timeout: 45_000, // 45 seconds
+    dnsTimeout: 10_000,
+    connectTimeout: 15_000,
+    navigationTimeout: 45_000,
+    httpTimeout: 10_000, // 10 seconds for HTTP requests
   },
   search: {
     pageSize: 100,

@@ -1,8 +1,9 @@
 import { load } from "cheerio";
-import puppeteer from "puppeteer";
+import { performance } from "perf_hooks";
+import puppeteer, { Browser } from "puppeteer";
 import scale from "../config/scale";
 import logger from "../lib/logger";
-import { LinkRepository } from "../storage/LinkRepository";
+import { LinkRepository } from "../repositories/LinkRepository";
 import { LinkEntity } from "../types";
 
 export type ScrapedLink = Pick<LinkEntity, "url" | "anchor_text" | "score" | "type"> & {
@@ -19,72 +20,163 @@ export class LinkScraper {
   };
 
   private readonly repository = new LinkRepository();
+  private activeRequests = 0;
+  private browser: Browser | null = null;
+
+  async close() {
+    if (this.browser) {
+      await this.browser.close();
+      this.browser = null;
+    }
+  }
 
   async scrape(url: string): Promise<ScrapedLink[]> {
-    logger.info(`\nStarting scrape job for ${url}\n`);
-    const html = await this.fetchHtml(url);
+    const startTime = performance.now();
+    logger.info(`[Scrape] Starting scrape job for ${url}`);
 
-    const { invalidUrls, links } = this.processHtml(html, url);
-    logger.info(
-      `Found ${links.length} unique links, ${invalidUrls} invalid URLs skipped, ${links.filter((l) => l.score > 0).length} scored, top 3:`,
-    );
-    console.table(links.slice(0, 3));
+    try {
+      const html = await this.fetchHtml(url);
+      const htmlFetchTime = performance.now();
+      logger.debug(`[Scrape] HTML fetched in ${((htmlFetchTime - startTime) / 1000).toFixed(2)}s`);
 
-    // Store results
-    await this.repository.bulkInsert(
-      links.map((link) => ({
-        ...link,
-        parentUrl: url, // Add parent URL context
-      })),
-    );
+      const { invalidUrls, links } = this.processHtml(html, url);
+      logger.info(
+        `[Scrape] Processed ${links.length} unique links | ` +
+          `Invalid: ${invalidUrls} skipped | ` +
+          `Processing time: ${((performance.now() - htmlFetchTime) / 1000).toFixed(2)}s` +
+          `Scored: ${links.filter((l) => l.score > 0).length} scored, top 3: | `,
+      );
+      console.table(links.slice(0, 3));
 
-    return links;
+      const dbStart = performance.now();
+      await this.repository.bulkInsert(
+        links.map((link) => ({
+          ...link,
+          parentUrl: url,
+        })),
+      );
+      logger.debug(`[Scrape] DB insert took ${((performance.now() - dbStart) / 1000).toFixed(2)}s`);
+
+      return links;
+    } finally {
+      logger.debug(
+        `[Scrape] Total scrape time: ${((performance.now() - startTime) / 1000).toFixed(2)}s`,
+      );
+      await this.close(); // Ensure browser cleanup
+    }
   }
 
   private async fetchHtml(url: string): Promise<string> {
+    logger.debug(`[Fetch] Starting fetch for ${url}`);
     const MAX_RETRIES = 3;
     let attempt = 0;
 
+    try {
+      // Try HTTP first
+      const httpContent = await this.fetchWithHttpClient(url);
+      if (!this.needsBrowserRendering(httpContent)) return httpContent;
+      logger.debug("Falling back to Puppeteer for Browser rendering");
+    } catch (httpError) {
+      logger.debug(`HTTP client failed: ${(httpError as Error).message}`);
+    }
+
+    // Fallback to Puppeteer with retries
     while (attempt < MAX_RETRIES) {
       try {
         return await this.fetchWithBrowserInstance(url, attempt);
       } catch (error) {
+        const { shouldRetry, delay } = this.handleFetchError(error as Error, attempt, MAX_RETRIES);
+        if (!shouldRetry) throw error;
+
+        logger.warn(`Retrying ${url} in ${delay}ms (${attempt + 1}/${MAX_RETRIES})`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
         attempt++;
-        if (attempt >= MAX_RETRIES) {
-          logger.error(`Scrape failed after ${MAX_RETRIES} attempts`, {
-            url,
-            error: (error as Error).message,
-          });
-          throw error;
-        }
-
-        logger.warn(`Retrying (${attempt}/${MAX_RETRIES})`, {
-          url,
-          error: (error as Error).message,
-          retryIn: `${2000 * attempt}ms`,
-        });
-
-        await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
       }
     }
-    throw new Error("Max retries exceeded");
+    throw new Error(`Max retries (${MAX_RETRIES}) exceeded for ${url}`);
+  }
+
+  private handleFetchError(error: Error, attempt: number, maxRetries: number) {
+    const isDnsError = error.message.includes("ERR_NAME_NOT_RESOLVED");
+    const isRecoverable =
+      !isDnsError &&
+      (error.message.includes("ERR_BLOCKED_BY_CLIENT") || error.message.includes("net::ERR"));
+
+    if (isDnsError) {
+      logger.error(`DNS resolution failed: ${error.message}`);
+      return { shouldRetry: false, delay: 0 };
+    }
+
+    const shouldRetry = isRecoverable && attempt < maxRetries - 1;
+    const delay = shouldRetry ? Math.pow(2, attempt) * 1000 : 0; // Exponential backoff
+
+    return { shouldRetry, delay };
+  }
+
+  private async fetchWithHttpClient(url: string): Promise<string> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), scale.scraping.httpTimeout);
+
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; HybridScraper/1.0)",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const content = await response.text();
+
+      return content;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private needsBrowserRendering(content: string): boolean {
+    // Detect common JS-rendered page patterns
+    const jsRenderingIndicators = [
+      "<noscript>",
+      "Loading...",
+      "window.location",
+      '<div id="root"></div>', // Common SPA container
+    ];
+
+    return (
+      content.length < 500 || // Suspiciously small content
+      !content.includes("<html") || // Not proper HTML
+      jsRenderingIndicators.some((indicator) => content.includes(indicator))
+    );
   }
 
   private async fetchWithBrowserInstance(url: string, attempt: number): Promise<string> {
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        `--max-parallel-runs=${scale.scraping.maxConcurrent}`,
-        "--disable-dev-shm-usage",
-        "--no-zygote",
-        "--no-sandbox",
-        "--disable-web-security",
-        "--disable-blink-features=AutomationControlled",
-      ],
-    });
+    // Add concurrency control
+    while (this.activeRequests >= scale.scraping.maxConcurrent)
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const startTime = performance.now();
+    this.activeRequests++;
 
     try {
+      logger.debug(`[Browser] Launching instance for ${url}`);
+
+      // Add concurrency monitoring
+      if (this.activeRequests >= scale.scraping.maxConcurrent)
+        logger.warn(
+          `[Concurrency] Waiting for slot (${this.activeRequests}/` +
+            `${scale.scraping.maxConcurrent} active)`,
+        );
+
+      const browser = await this.getBrowser();
       const page = await browser.newPage();
+      const navStart = performance.now();
+
+      // Set DNS resolution timeout
+      page.setDefaultNavigationTimeout(scale.scraping.dnsTimeout);
+
       await page.setExtraHTTPHeaders({
         "Accept-Language": "en-US,en;q=0.9",
       });
@@ -103,7 +195,8 @@ export class LinkScraper {
       await page.setRequestInterception(true);
 
       page.on("request", (req) => {
-        if (["image", "stylesheet", "font"].includes(req.resourceType())) req.abort();
+        const blockedResources = ["image", "stylesheet", "font", "media", "ping", "csp_report"];
+        if (blockedResources.includes(req.resourceType())) req.abort();
         else req.continue();
       });
 
@@ -112,9 +205,10 @@ export class LinkScraper {
         logger.debug(`[${attempt}] ${response.status()} ${response.url()}`),
       );
 
+      // Faster navigation for tests
       await page.goto(url, {
-        waitUntil: "networkidle2",
-        timeout: scale.scraping.timeout || 30_000,
+        waitUntil: "domcontentloaded",
+        timeout: scale.scraping.navigationTimeout,
       });
 
       const finalUrl = page.url();
@@ -123,24 +217,66 @@ export class LinkScraper {
       }
 
       const content = await page.content();
-      if (!content || content.length < 1000) {
-        throw new Error("Insufficient content length");
-      }
+      logger.debug(
+        `[Browser] Page content (${content.length} bytes) ` +
+          `loaded in ${((performance.now() - navStart) / 1000).toFixed(2)}s`,
+      );
 
       logger.info(`Scraped ${url} successfully (${content.length} bytes)`);
-      await browser.close();
+      await page.close();
+      this.activeRequests--;
       return content;
     } finally {
-      await browser
-        .close()
-        .catch((error) => logger.warn("Browser cleanup failed", { error: error.message }));
+      this.activeRequests--;
+      logger.debug(
+        `[Browser] Instance closed for ${url} | ` +
+          `Total time: ${((performance.now() - startTime) / 1000).toFixed(2)}s`,
+      );
     }
+  }
+
+  private async getBrowser() {
+    if (!this.browser?.connected) {
+      const isTestEnv = process.env.NODE_ENV === "test";
+
+      this.browser = await puppeteer.launch({
+        headless: true,
+        args: [
+          ...(isTestEnv
+            ? [
+                "--single-process",
+                "--no-zygote",
+                "--disable-features=site-per-process",
+                "--disable-setuid-sandbox",
+                "--disable-background-timer-throttling",
+                "--disable-renderer-backgrounding",
+                "--disable-extensions",
+                "--disable-component-extensions-with-background-pages",
+                "--disable-default-apps",
+              ]
+            : []),
+          "--disable-dns-retries",
+          "--dns-prefetch-disable",
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-accelerated-2d-canvas",
+          "--disable-gpu",
+          "--disable-dev-shm-usage",
+        ],
+        timeout: scale.scraping.connectTimeout,
+      });
+
+      // Add safety cleanup
+      this.browser.on("disconnected", () => (this.browser = null));
+    }
+    return this.browser;
   }
 
   private processHtml(
     html: string,
     baseUrl: string,
   ): { invalidUrls: number; links: ScrapedLink[] } {
+    const startTime = performance.now();
     const $ = load(html);
     const uniqueLinks = new Map<string, { url: string; anchorText: string }>();
     let invalidUrls = 0;
@@ -157,15 +293,19 @@ export class LinkScraper {
           uniqueLinks.set(url, { url, anchorText });
         }
       } catch (error) {
-        logger.warn(`Invalid URL skipped: ${$el.attr("href")}`, error);
+        logger.warn(`Invalid URL skipped: ${$el.attr("href")}. error: ${(error as Error).message}`);
         invalidUrls++;
       }
     });
 
+    logger.debug(
+      `[Process] Parsed ${uniqueLinks.size} links in ${((performance.now() - startTime) / 1000).toFixed(2)}s`,
+    );
     return { invalidUrls, links: this.rankLinks(Array.from(uniqueLinks.values())) };
   }
 
   private rankLinks(links: Array<{ url: string; anchorText: string }>): ScrapedLink[] {
+    const startTime = performance.now();
     const rankedLinks = links
       .map((link) => {
         const { url, anchorText: anchor_text } = link;
@@ -182,6 +322,9 @@ export class LinkScraper {
       })
       .sort((a, b) => b.score - a.score);
 
+    logger.debug(
+      `[Rank] Scored ${links.length} links in ${((performance.now() - startTime) / 1000).toFixed(2)}s`,
+    );
     return rankedLinks;
   }
 
