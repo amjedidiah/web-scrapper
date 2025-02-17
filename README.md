@@ -21,6 +21,10 @@ A web scraper that identifies and prioritizes high-value links on web pages, foc
   - [More Scaling Considerations](#more-scaling-considerations)
 - [Testing](#testing)
   - [API Testing](#api-testing)
+- [Future Improvements](#future-improvements)
+  - [Testing Enhancements](#testing-enhancements)
+  - [Database Management](#database-management)
+  - [CLI Tool](#cli-tool)
 - [License](#license)
 
 ## Features
@@ -46,7 +50,7 @@ After evaluating several options including [ScrapingBee](https://www.scrapingbee
 1. Install dependencies
 
    ```bash
-   yarn install
+   pnpm install
    ```
 
 2. Set up environment variables
@@ -270,20 +274,83 @@ This is related to Chromium's security features. You can handle this in three wa
    source ~/.zshrc  # or your shell profile
    ```
 
-3. **Docker Solution**: Use containerized testing
-
-   This approach:
-   - Avoids keychain prompts entirely
-   - Ensures consistent test environment
-   - Works across all platforms
-   - Recommended for CI/CD pipelines
-
-   Note: Make sure Docker is installed on your machine.
-
 ### API Testing
 
 Import our [Postman Collection](./Link%20Scrapper.postman_collection.json) for API testing and examples.
 
+## Future Improvements
+
+### Testing Enhancements
+
+- Add integration tests for `POST /scrape` route
+
+  ```typescript
+  // Planned test structure
+  describe('POST /scrape', () => {
+    test('should handle valid URLs', async () => {
+      const response = await request(app)
+        .post('/scrape')
+        .send({ url: 'https://example.com' });
+      
+      expect(response.status).toBe(202);
+      expect(response.body.data.processed).toBeGreaterThan(0);
+    });
+  });
+  ```
+
+### Database Management
+
+- Implement Prisma ORM
+  - Type-safe database queries
+  - Automated migration management
+  - Better schema versioning
+  - Example migration:
+
+    ```prisma
+    model Link {
+      id         String   @id
+      url        String   @unique
+      anchorText String
+      score      Float
+      keywords   String[]
+      parentUrl  String
+      type       LinkType
+      crawledAt  DateTime @default(now())
+    }
+
+    enum LinkType {
+      DOCUMENT
+      CONTACT
+      GENERAL
+    }
+    ```
+
+### CLI Tool
+
+- Add command-line interface for crawler
+
+  ```bash
+  # Planned usage
+  pnpm crawl https://example.com --min-score 0.7 --output json
+  ```
+
+  ```typescript
+  // Planned implementation
+  #!/usr/bin/env node
+  import { program } from 'commander';
+  import { LinkScraper } from './core/scrapper';
+
+  program
+    .argument('<url>', 'URL to crawl')
+    .option('--min-score <number>', 'Minimum score threshold', '0.5')
+    .option('--output <format>', 'Output format (json|csv)', 'json')
+    .action(async (url, options) => {
+      const scraper = new LinkScraper();
+      const results = await scraper.scrape(url);
+      // Output handling
+    });
+  ```
+
 ## License
 
-MIT
+[MIT](./LICENSE.md)
