@@ -7,9 +7,10 @@ const TEST_URLS = [
   "https://bozeman.net/",
   "https://asu.edu/",
   "https://boerneisd.net/",
+  "https://stripe-store-aj.netlify.app/",
 ];
 
-describe("Phase 1 Tests", () => {
+describe("[Core] Scrapper", () => {
   const scraper = new LinkScraper();
 
   beforeEach(() => {
@@ -25,34 +26,30 @@ describe("Phase 1 Tests", () => {
     })();
   });
 
-  test.each(TEST_URLS)(
-    "Should scrape and store links for %s",
-    async (url) => {
-      // Execute scrape
-      const results = await scraper.scrape(url);
+  test.each(TEST_URLS)("Should scrape and store links for %s", async (url) => {
+    // Execute scrape
+    const results = await scraper.scrape(url);
 
-      // Verify database records
-      const dbLinks = db
-        .prepare<[string]>("SELECT * FROM links WHERE parent_url = ?")
-        .all(url) as LinkEntity[];
+    // Verify database records
+    const dbLinks = db
+      .prepare<[string]>("SELECT * FROM links WHERE parent_url = ?")
+      .all(url) as LinkEntity[];
 
-      // Basic assertions
-      expect(results.length).toBeGreaterThan(0);
-      expect(dbLinks.length).toBeLessThanOrEqual(results.length);
-      expect(dbLinks.length).toBeGreaterThan(0);
+    // Basic assertions
+    expect(results.length).toBeGreaterThan(0);
+    expect(dbLinks.length).toBeLessThanOrEqual(results.length);
+    expect(dbLinks.length).toBeGreaterThan(0);
 
-      // Verify first result
-      const firstResult = results[0];
-      const firstDbLink = dbLinks[0];
-      expect(firstDbLink.url).toBe(firstResult.url);
-      expect(firstDbLink.score).toBeCloseTo(firstResult.score);
-      expect(JSON.parse(firstDbLink.keywords)).toEqual(firstResult.keywords);
+    // Verify first result
+    const firstResult = results[0];
+    const firstDbLink = dbLinks[0];
+    expect(firstDbLink.url).toBe(firstResult.url);
+    expect(firstDbLink.score).toBeCloseTo(firstResult.score);
+    expect(JSON.parse(firstDbLink.keywords)).toEqual(firstResult.keywords);
 
-      // Verify ULID format
-      expect(firstDbLink.id).toMatch(/^[0-9A-Z]{26}$/);
-    },
-    30_000,
-  );
+    // Verify ULID format
+    expect(firstDbLink.id).toMatch(/^[0-9A-Z]{26}$/);
+  });
 
   afterAll(async () => {
     db.close();

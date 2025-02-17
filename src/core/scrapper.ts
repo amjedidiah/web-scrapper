@@ -1,6 +1,7 @@
 import { load } from "cheerio";
+import { CheerioCrawler, PlaywrightCrawler, RequestQueue } from "crawlee";
 import { performance } from "perf_hooks";
-import puppeteer, { Browser } from "puppeteer";
+import { v4 as uuid } from "uuid";
 import scale from "../config/scale";
 import logger from "../lib/logger";
 import { LinkRepository } from "../repositories/LinkRepository";
@@ -20,19 +21,23 @@ export class LinkScraper {
   };
 
   private readonly repository = new LinkRepository();
-  private activeRequests = 0;
-  private browser: Browser | null = null;
+  private requestQueue: RequestQueue | null = null;
+  private readonly activeCrawlers = new Set<CheerioCrawler | PlaywrightCrawler>();
+  private html = "";
 
-  async close() {
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
-    }
+  async setRequestQueue(url: string) {
+    if (!this.requestQueue) this.requestQueue = await RequestQueue.open(uuid());
+
+    // Add URL to request list
+    await this.requestQueue.addRequest({ url, uniqueKey: uuid() });
   }
 
   async scrape(url: string): Promise<ScrapedLink[]> {
     const startTime = performance.now();
     logger.info(`[Scrape] Starting scrape job for ${url}`);
+
+    // Initialise request queue
+    await this.setRequestQueue(url);
 
     try {
       const html = await this.fetchHtml(url);
@@ -62,214 +67,52 @@ export class LinkScraper {
       logger.debug(
         `[Scrape] Total scrape time: ${((performance.now() - startTime) / 1000).toFixed(2)}s`,
       );
-      await this.close(); // Ensure browser cleanup
+      await this.cleanup();
     }
   }
 
   private async fetchHtml(url: string): Promise<string> {
     logger.debug(`[Fetch] Starting fetch for ${url}`);
-    const MAX_RETRIES = 3;
-    let attempt = 0;
+
+    // First try CheerioCrawler for static content
+    const cheerioCrawler = this.createCheerioCrawler();
 
     try {
-      // Try HTTP first
-      const httpContent = await this.fetchWithHttpClient(url);
-      if (!this.needsBrowserRendering(httpContent)) return httpContent;
-      logger.debug("Falling back to Puppeteer for Browser rendering");
-    } catch (httpError) {
-      logger.debug(`HTTP client failed: ${(httpError as Error).message}`);
+      await cheerioCrawler.run();
+      const needsBrowser = this.needsBrowserRendering(this.html);
+      await cheerioCrawler.teardown();
+
+      if (!needsBrowser) return this.html;
+    } catch (error) {
+      logger.warn(`CheerioCrawler failed: ${(error as Error).message}`);
     }
 
-    // Fallback to Puppeteer with retries
-    while (attempt < MAX_RETRIES) {
-      try {
-        return await this.fetchWithBrowserInstance(url, attempt);
-      } catch (error) {
-        const { shouldRetry, delay } = this.handleFetchError(error as Error, attempt, MAX_RETRIES);
-        if (!shouldRetry) throw error;
-
-        logger.warn(`Retrying ${url} in ${delay}ms (${attempt + 1}/${MAX_RETRIES})`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        attempt++;
-      }
-    }
-    throw new Error(`Max retries (${MAX_RETRIES}) exceeded for ${url}`);
+    await this.setRequestQueue(url); // Add the url to the queue again for processing
+    logger.debug(`Falling back to Playwright for ${url}`);
+    return this.fetchWithPlaywright();
   }
 
-  private handleFetchError(error: Error, attempt: number, maxRetries: number) {
-    const isDnsError = error.message.includes("ERR_NAME_NOT_RESOLVED");
-    const isRecoverable =
-      !isDnsError &&
-      (error.message.includes("ERR_BLOCKED_BY_CLIENT") || error.message.includes("net::ERR"));
-
-    if (isDnsError) {
-      logger.error(`DNS resolution failed: ${error.message}`);
-      return { shouldRetry: false, delay: 0 };
-    }
-
-    const shouldRetry = isRecoverable && attempt < maxRetries - 1;
-    const delay = shouldRetry ? Math.pow(2, attempt) * 1000 : 0; // Exponential backoff
-
-    return { shouldRetry, delay };
-  }
-
-  private async fetchWithHttpClient(url: string): Promise<string> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), scale.scraping.httpTimeout);
+  private async fetchWithPlaywright(): Promise<string> {
+    const playwrightCrawler = this.createPlaywrightCrawler();
 
     try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; HybridScraper/1.0)",
-          "Accept-Language": "en-US,en;q=0.9",
-        },
-      });
-
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-      const content = await response.text();
-
-      return content;
+      await playwrightCrawler.run();
     } finally {
-      clearTimeout(timeout);
+      await playwrightCrawler.teardown();
     }
+    return this.html;
   }
 
   private needsBrowserRendering(content: string): boolean {
     // Detect common JS-rendered page patterns
-    const jsRenderingIndicators = [
-      "<noscript>",
-      "Loading...",
-      "window.location",
-      '<div id="root"></div>', // Common SPA container
-    ];
+    // const jsRenderingIndicators = ["<noscript>", "Loading...", "window.location"];
+    const jsRenderingIndicators = ["<noscript>", "Loading..."];
 
     return (
       content.length < 500 || // Suspiciously small content
       !content.includes("<html") || // Not proper HTML
       jsRenderingIndicators.some((indicator) => content.includes(indicator))
     );
-  }
-
-  private async fetchWithBrowserInstance(url: string, attempt: number): Promise<string> {
-    // Add concurrency control
-    while (this.activeRequests >= scale.scraping.maxConcurrent)
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-    const startTime = performance.now();
-    this.activeRequests++;
-
-    try {
-      logger.debug(`[Browser] Launching instance for ${url}`);
-
-      // Add concurrency monitoring
-      if (this.activeRequests >= scale.scraping.maxConcurrent)
-        logger.warn(
-          `[Concurrency] Waiting for slot (${this.activeRequests}/` +
-            `${scale.scraping.maxConcurrent} active)`,
-        );
-
-      const browser = await this.getBrowser();
-      const page = await browser.newPage();
-      const navStart = performance.now();
-
-      // Set DNS resolution timeout
-      page.setDefaultNavigationTimeout(scale.scraping.dnsTimeout);
-
-      await page.setExtraHTTPHeaders({
-        "Accept-Language": "en-US,en;q=0.9",
-      });
-
-      // Rotating user agents
-      await page.setUserAgent(
-        [
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-          "AppleWebKit/537.36 (KHTML, like Gecko)",
-          `Chrome/${117 + attempt}.0.0.0`,
-          "Safari/537.36",
-        ].join(" "),
-      );
-
-      await page.setJavaScriptEnabled(true);
-      await page.setRequestInterception(true);
-
-      page.on("request", (req) => {
-        const blockedResources = ["image", "stylesheet", "font", "media", "ping", "csp_report"];
-        if (blockedResources.includes(req.resourceType())) req.abort();
-        else req.continue();
-      });
-
-      // Add request/response monitoring
-      page.on("response", (response) =>
-        logger.debug(`[${attempt}] ${response.status()} ${response.url()}`),
-      );
-
-      // Faster navigation for tests
-      await page.goto(url, {
-        waitUntil: "domcontentloaded",
-        timeout: scale.scraping.navigationTimeout,
-      });
-
-      const finalUrl = page.url();
-      if (finalUrl !== url) {
-        logger.warn(`Redirected to ${finalUrl} during attempt ${attempt}`);
-      }
-
-      const content = await page.content();
-      logger.debug(
-        `[Browser] Page content (${content.length} bytes) ` +
-          `loaded in ${((performance.now() - navStart) / 1000).toFixed(2)}s`,
-      );
-
-      logger.info(`Scraped ${url} successfully (${content.length} bytes)`);
-      await page.close();
-      this.activeRequests--;
-      return content;
-    } finally {
-      this.activeRequests--;
-      logger.debug(
-        `[Browser] Instance closed for ${url} | ` +
-          `Total time: ${((performance.now() - startTime) / 1000).toFixed(2)}s`,
-      );
-    }
-  }
-
-  private async getBrowser() {
-    if (!this.browser?.connected) {
-      const isTestEnv = process.env.NODE_ENV === "test";
-
-      this.browser = await puppeteer.launch({
-        headless: true,
-        args: [
-          ...(isTestEnv
-            ? [
-                "--single-process",
-                "--no-zygote",
-                "--disable-features=site-per-process",
-                "--disable-setuid-sandbox",
-                "--disable-background-timer-throttling",
-                "--disable-renderer-backgrounding",
-                "--disable-extensions",
-                "--disable-component-extensions-with-background-pages",
-                "--disable-default-apps",
-              ]
-            : []),
-          "--disable-dns-retries",
-          "--dns-prefetch-disable",
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          "--disable-accelerated-2d-canvas",
-          "--disable-gpu",
-          "--disable-dev-shm-usage",
-        ],
-        timeout: scale.scraping.connectTimeout,
-      });
-
-      // Add safety cleanup
-      this.browser.on("disconnected", () => (this.browser = null));
-    }
-    return this.browser;
   }
 
   private processHtml(
@@ -295,6 +138,38 @@ export class LinkScraper {
       } catch (error) {
         logger.warn(`Invalid URL skipped: ${$el.attr("href")}. error: ${(error as Error).message}`);
         invalidUrls++;
+      }
+    });
+
+    // Detect JavaScript redirects in script tags
+    $("script").each((_, el) => {
+      const scriptContent = $(el).html();
+      if (!scriptContent) return;
+
+      const redirectPatterns = [
+        /window\.location\.href\s*=\s*['"]([^'"]+)['"]/,
+        /window\.location\.assign\(['"]([^'"]+)['"]\)/,
+        /window\.location\.replace\(['"]([^'"]+)['"]\)/,
+      ];
+
+      for (const pattern of redirectPatterns) {
+        const matches = RegExp(pattern).exec(scriptContent);
+        if (matches?.[1]) {
+          try {
+            const href = matches[1];
+            const url = new URL(href, baseUrl).toString();
+
+            if (!uniqueLinks.has(url)) {
+              uniqueLinks.set(url, {
+                url,
+                anchorText: "JavaScript redirect",
+              });
+            }
+          } catch (error) {
+            logger.error(`Invalid url: ${(error as Error).message}`);
+            invalidUrls++;
+          }
+        }
       }
     });
 
@@ -365,5 +240,101 @@ export class LinkScraper {
     if (isDocument) return [...keywords, "document"];
 
     return keywords;
+  }
+
+  private createCheerioCrawler() {
+    const crawler = new CheerioCrawler({
+      requestQueue: this.requestQueue!,
+      requestHandler: ({ body }) => {
+        this.html = body.toString();
+      },
+      maxConcurrency: scale.scraping.maxConcurrent,
+      maxRequestRetries: scale.scraping.maxRequestRetries,
+      retryOnBlocked: true,
+    });
+    this.activeCrawlers.add(crawler);
+    return crawler;
+  }
+
+  private createPlaywrightCrawler() {
+    const crawler = new PlaywrightCrawler({
+      requestQueue: this.requestQueue!,
+      requestHandler: async ({ page }) => {
+        this.html = await page.content();
+      },
+      maxConcurrency: scale.scraping.maxConcurrent,
+      maxRequestRetries: 0, // Disable retries to ensure clean state
+      launchContext: {
+        userDataDir: `/tmp/playwright-${uuid()}`, // Unique dir per instance
+        launchOptions: {
+          headless: true,
+          ignoreHTTPSErrors: true,
+          args: [
+            "--use-mock-keychain",
+            "--password-store=basic",
+            "--disable-encryption",
+            "--no-service-authorization",
+            "--disable-breakpad",
+            "--no-first-run",
+            "--headless=new",
+            "--disable-dns-retries",
+            "--dns-prefetch-disable",
+            "--disable-features=ChromePasswordManager,AutomationControlled,Translate",
+            "--disable-sync",
+            "--disable-web-security",
+            "--disable-client-side-phishing-detection",
+            "--disable-component-update",
+            "--disable-default-apps",
+            "--no-xshm", // Disable shared memory
+          ],
+          permissions: [],
+          userAgent:
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+          bypassCSP: true,
+        },
+      },
+      browserPoolOptions: {
+        useFingerprints: false,
+        preLaunchHooks: [
+          async () => {
+            process.env.PLAYWRIGHT_CREDENTIALS_PATH = "/dev/null";
+            process.env.PLAYWRIGHT_SKIP_BROWSER_GC = "1";
+            process.env.GOOGLE_API_KEY = "no";
+            process.env.GOOGLE_DEFAULT_CLIENT_ID = "no";
+            process.env.GOOGLE_DEFAULT_CLIENT_SECRET = "no";
+          },
+        ],
+        postPageCreateHooks: [
+          async (page) => {
+            const handleRejection = () => Promise.reject(new Error("Credentials disabled"));
+
+            await page.context().clearCookies();
+            await page.addInitScript(() => {
+              Object.defineProperty(navigator, "credentials", {
+                get: () => ({
+                  create: handleRejection,
+                  get: handleRejection,
+                }),
+              });
+            });
+          },
+        ],
+      },
+    });
+
+    this.activeCrawlers.add(crawler);
+    return crawler;
+  }
+
+  async cleanup() {
+    logger.debug(`Cleaning up`);
+
+    for (const crawler of this.activeCrawlers) await crawler.teardown();
+    this.activeCrawlers.clear();
+
+    await this.requestQueue?.drop();
+    this.requestQueue = null;
+
+    logger.debug("Cleanup complete");
   }
 }

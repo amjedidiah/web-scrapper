@@ -7,9 +7,10 @@
 ### Phase 1: Core Setup
 
 ```bash
-npm init -y
-npm install typescript ts-node @types/node express better-sqlite3 cheerio puppeteer
-npm install -D eslint @typescript-eslint/parser
+npm install -g pnpm
+pnpm init -y
+pnpm install typescript ts-node @types/node express better-sqlite3 cheerio crawlee
+pnpm install -D eslint @typescript-eslint/parser
 ```
 
 ### Phase 2: Scraper Implementation
@@ -117,10 +118,7 @@ const scale = {
   },
   scraping: {
     maxConcurrent: process.env.NODE_ENV === "production" ? 100 : 10,
-    dnsTimeout: 10_000,
-    connectTimeout: 15_000,
-    navigationTimeout: 45_000,
-    httpTimeout: 10_000, // 10 seconds for HTTP requests
+    maxRequestRetries: 3,
   },
   search: {
     pageSize: 100,
@@ -173,23 +171,17 @@ test.each(TEST_SITES)('Scrapes %s successfully', async (url) => {
 
 ## Quick Start
 
-1. Initialize database:
+1. Test scraper:
 
     ```bash
-    npx ts-node src/config/database.ts
+    pnpm run test src/__tests__/core/scrapper.test.ts
     ```
 
-2. Test scraper:
+2. Run API Server:
 
     ```bash
-    npm run test
-    ```
-
-3. Run API Server:
-
-    ```bash
-    npm run api:dev     # Dev environment
-    npm run api:start   # Prod environment
+    pnpm run api:dev     # Dev environment
+    pnpm run api:start   # Prod environment
     ```
 
 ## Scaling Considerations
