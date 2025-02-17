@@ -1,0 +1,122 @@
+{
+	"info": {
+		"_postman_id": "1a0b7b74-ea97-46ca-a73b-b7d389ff49d6",
+		"name": "Link Scrapper",
+		"schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json",
+		"_exporter_id": "12127664"
+	},
+	"item": [
+		{
+			"name": "Get Links",
+			"request": {
+				"method": "GET",
+				"header": [
+					{
+						"key": "Cookie",
+						"value": "PHPSESSID=uigd5f7dnsctb6i5lbj5gl2egb",
+						"name": "cookie",
+						"type": "text"
+					},
+					{
+						"key": "Cache-Control",
+						"value": "no-cache",
+						"name": "cache-control",
+						"type": "text"
+					},
+					{
+						"key": "Postman-Token",
+						"value": "<calculated when request is sent>",
+						"name": "postman-token",
+						"type": "text"
+					},
+					{
+						"key": "Host",
+						"value": "<calculated when request is sent>",
+						"name": "host",
+						"type": "text"
+					},
+					{
+						"key": "User-Agent",
+						"value": "PostmanRuntime/7.39.1",
+						"name": "user-agent",
+						"type": "text"
+					},
+					{
+						"key": "Accept",
+						"value": "*/*",
+						"name": "accept",
+						"type": "text"
+					},
+					{
+						"key": "Accept-Encoding",
+						"value": "gzip, deflate, br",
+						"name": "accept-encoding",
+						"type": "text"
+					},
+					{
+						"key": "Connection",
+						"value": "keep-alive",
+						"name": "connection",
+						"type": "text"
+					}
+				],
+				"url": {
+					"raw": "http://localhost:8008/links",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8008",
+					"path": [
+						"links"
+					],
+					"query": [
+						{
+							"key": "minScore",
+							"value": "0.5",
+							"disabled": true
+						},
+						{
+							"key": "parentUrl",
+							"value": "next",
+							"disabled": true
+						},
+						{
+							"key": "keyword",
+							"value": "budget",
+							"disabled": true
+						}
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get Link",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": "http://localhost:8008/links/01JKZQNHWV5KSW9JFA05J40PNW"
+			},
+			"response": []
+		},
+		{
+			"name": "Scrape Link",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"url\": \"https://www.nextjs.org\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": "http://localhost:3000/scrape"
+			},
+			"response": []
+		}
+	]
+}

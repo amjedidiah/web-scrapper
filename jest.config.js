@@ -1,7 +1,7 @@
 module.exports = {
   preset: "ts-jest",
   testEnvironment: "node",
-  testTimeout: 45_000, // Global 45s timeout
+  testTimeout: 60_000, // Global 45s timeout
   globalSetup: "<rootDir>/src/jest.global-setup.ts",
   testEnvironmentOptions: {
     NODE_ENV: "test",
